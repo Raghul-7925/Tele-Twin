@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
-import 'leaflet.heat';
 import axios from 'axios';
 import 'leaflet/dist/leaflet.css';
 
@@ -100,6 +99,12 @@ function HeatmapLayer({ points, visible }) {
 
     if (!visible || !points || points.length === 0) return;
 
+    // Check if L.heatLayer is available (loaded via CDN)
+    if (!L.heatLayer) {
+      console.error('leaflet.heat not loaded — L.heatLayer is undefined');
+      return;
+    }
+
     // Convert coverage points to heatmap format [lat, lon, intensity]
     const heatData = points.map(p => {
       // Normalize RSRP to intensity (0-1)
@@ -110,10 +115,11 @@ function HeatmapLayer({ points, visible }) {
 
     // Create heat layer with gradient
     heatLayerRef.current = L.heatLayer(heatData, {
-      radius: 25,
-      blur: 20,
+      radius: 30,
+      blur: 25,
       maxZoom: 15,
       max: 1.0,
+      minOpacity: 0.3,
       gradient: {
         0.1: '#ef4444',   // red - no coverage
         0.3: '#f97316',   // orange - weak
