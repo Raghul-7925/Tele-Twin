@@ -109,7 +109,7 @@ def color_for_quality(q):
     return {"excellent": "#22c55e", "good": "#eab308",
             "weak": "#f97316", "none": "#ef4444"}.get(q, "#ef4444")
 
-def compute_coverage(tower, grid_steps=40):
+def compute_coverage(tower, grid_steps=50):
     """Generate a list of coverage points around a tower."""
     lat, lon = tower["lat"], tower["lon"]
     hb = tower["height"]
@@ -118,11 +118,19 @@ def compute_coverage(tower, grid_steps=40):
     g  = tower["gain"]    # dBi
     hm = 1.5
 
-    # max range estimate (km) based on frequency
-    max_range = max(1.0, 50 - (f / 100))
+    # max range estimate (km) — lower frequencies propagate further
+    if f <= 700:
+        max_range = 25
+    elif f <= 900:
+        max_range = 20
+    elif f <= 1800:
+        max_range = 12
+    elif f <= 2100:
+        max_range = 8
+    else:
+        max_range = 5
 
     points = []
-    step = (max_range * 2) / grid_steps
 
     for i in range(grid_steps):
         for j in range(grid_steps):
@@ -205,7 +213,7 @@ def coverage_all():
     for r in rows:
         tower = {"lat":r[0],"lon":r[1],"height":r[2],"frequency":r[3],
                  "power":r[4],"gain":r[5],"operator":r[6]}
-        all_points.extend(compute_coverage(tower, grid_steps=30))
+        all_points.extend(compute_coverage(tower, grid_steps=50))
 
     return {"count": len(all_points), "points": all_points}
 
@@ -229,6 +237,46 @@ def get_signal_reports():
     return [{"id":r[0],"lat":r[1],"lon":r[2],"rsrp":r[3],"operator":r[4],
              "quality": signal_quality(r[3]), "color": color_for_quality(signal_quality(r[3])),
              "created_at":r[5]} for r in rows]
+
+# ── CSV Import ──────────────────────────────────────────────────────────────────
+
+@app.post("/import-csv")
+async def import_csv(file: bytes):
+    """Import OpenCelliD CSV data. Expects columns: lat, lon, operator (optional)."""
+    import csv
+    import io
+    try:
+        text = file.decode('utf-8')
+        reader = csv.DictReader(io.StringIO(text))
+        count = 0
+        con = sqlite3.connect(DB)
+        cur = con.cursor()
+        for row in reader:
+            lat = float(row.get('lat', row.get('Lat', row.get('LAT', 0))))
+            lon = float(row.get('lon', row.get('Lon', row.get('LON', row.get('lng', row.get('Lng', 0))))))
+            op = row.get('operator', row.get('Operator', row.get('OPERATOR', row.get('net', 'Unknown'))))
+            if lat == 0 or lon == 0:
+                continue
+            # Map operator names
+            op_lower = str(op).lower()
+            if 'bsnl' in op_lower or '51' in op_lower:
+                op = 'BSNL'
+            elif 'jio' in op_lower or 'reliance' in op_lower or '55' in op_lower:
+                op = 'Jio'
+            elif 'airtel' in op_lower or '45' in op_lower:
+                op = 'Airtel'
+            elif 'vi' in op_lower or 'vodafone' in op_lower or 'idea' in op_lower or '46' in op_lower:
+                op = 'Vi'
+            cur.execute(
+                "INSERT INTO towers (lat,lon,height,frequency,power,gain,operator,source) VALUES (?,?,?,?,?,?,?,?)",
+                (lat, lon, 30, 900, 43, 15, op, 'csv')
+            )
+            count += 1
+        con.commit(); con.close()
+        return {"message": f"Imported {count} towers", "count": count}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.get("/suggest-tower")
 def suggest_tower():

@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Circle, useMapEvents } from 'react-leaflet';
+import React, { useState, useEffect, useRef } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
+import 'leaflet.heat';
 import axios from 'axios';
 import 'leaflet/dist/leaflet.css';
 
@@ -16,73 +17,126 @@ const OPERATORS = ['BSNL', 'Jio', 'Airtel', 'Vi'];
 const FREQUENCIES = [700, 900, 1800, 2100, 3500];
 const OP_COLORS = { BSNL: '#f97316', Jio: '#3b82f6', Airtel: '#ef4444', Vi: '#a855f7' };
 
-// ── Tower icon with pulse ring ────────────────────────────────────────────────
+// ── Animated Tower Icon ──────────────────────────────────────────────────────
 function towerIcon(operator) {
   const color = OP_COLORS[operator] || '#fff';
   return L.divIcon({
-    className: '',
+    className: 'tower-icon-wrapper',
     html: `
-      <div style="position:relative;width:40px;height:40px;display:flex;align-items:center;justify-content:center;">
+      <div style="position:relative;width:60px;height:60px;display:flex;align-items:center;justify-content:center;">
+        <!-- Outer spreading ring 1 -->
+        <div style="
+          position:absolute;
+          width:60px;height:60px;
+          border-radius:50%;
+          background:radial-gradient(circle, ${color}44 0%, ${color}00 70%);
+          border:2px solid ${color}66;
+          animation:towerSpread 2.5s ease-out infinite;
+        "></div>
+        <!-- Outer spreading ring 2 (delayed) -->
+        <div style="
+          position:absolute;
+          width:60px;height:60px;
+          border-radius:50%;
+          background:radial-gradient(circle, ${color}33 0%, ${color}00 70%);
+          border:2px solid ${color}44;
+          animation:towerSpread 2.5s ease-out infinite 0.8s;
+        "></div>
+        <!-- Middle pulse ring -->
         <div style="
           position:absolute;
           width:40px;height:40px;
           border-radius:50%;
-          background:${color}33;
+          background:radial-gradient(circle, ${color}55 0%, ${color}00 70%);
           border:2px solid ${color}88;
           animation:towerPulse 1.8s ease-out infinite;
         "></div>
+        <!-- Inner core -->
         <div style="
           position:absolute;
-          width:26px;height:26px;
+          width:22px;height:22px;
           border-radius:50%;
-          background:${color}55;
+          background:radial-gradient(circle, ${color}cc 0%, ${color}88 100%);
           border:2px solid ${color};
-          animation:towerPulse 1.8s ease-out infinite 0.4s;
+          box-shadow: 0 0 12px ${color}88, 0 0 24px ${color}44;
+          animation: towerGlow 1.5s ease-in-out infinite alternate;
         "></div>
+        <!-- Tower emoji -->
         <div style="
           position:relative;z-index:2;
-          font-size:18px;line-height:1;
-          filter:drop-shadow(0 0 4px ${color});
+          font-size:20px;line-height:1;
+          filter:drop-shadow(0 0 6px ${color});
         ">🗼</div>
       </div>
     `,
-    iconSize: [40, 40],
-    iconAnchor: [20, 20],
-    popupAnchor: [0, -20],
+    iconSize: [60, 60],
+    iconAnchor: [30, 30],
+    popupAnchor: [0, -30],
   });
 }
 
 function signalIcon(color) {
   return L.divIcon({
     className: '',
-    html: `<div style="width:10px;height:10px;border-radius:50%;background:${color};border:1.5px solid #fff;opacity:0.9;box-shadow:0 0 4px ${color}"></div>`,
-    iconSize: [10, 10],
-    iconAnchor: [5, 5],
+    html: `<div style="width:12px;height:12px;border-radius:50%;background:${color};border:2px solid #fff;opacity:0.9;box-shadow:0 0 6px ${color}"></div>`,
+    iconSize: [12, 12],
+    iconAnchor: [6, 6],
   });
 }
 
-function MapClickHandler({ onMapClick }) {
-  useMapEvents({ click: (e) => onMapClick(e.latlng) });
+// ── Heatmap Layer Component ─────────────────────────────────────────────────
+function HeatmapLayer({ points, visible }) {
+  const map = useMap();
+  const heatLayerRef = useRef(null);
+
+  useEffect(() => {
+    if (!map) return;
+
+    // Remove existing layer
+    if (heatLayerRef.current) {
+      map.removeLayer(heatLayerRef.current);
+      heatLayerRef.current = null;
+    }
+
+    if (!visible || !points || points.length === 0) return;
+
+    // Convert coverage points to heatmap format [lat, lon, intensity]
+    const heatData = points.map(p => {
+      // Normalize RSRP to intensity (0-1)
+      // -50 dBm = max intensity (1.0), -120 dBm = min (0.1)
+      const intensity = Math.max(0.1, Math.min(1.0, (p.rsrp + 120) / 70));
+      return [p.lat, p.lon, intensity];
+    });
+
+    // Create heat layer with gradient
+    heatLayerRef.current = L.heatLayer(heatData, {
+      radius: 25,
+      blur: 20,
+      maxZoom: 15,
+      max: 1.0,
+      gradient: {
+        0.1: '#ef4444',   // red - no coverage
+        0.3: '#f97316',   // orange - weak
+        0.5: '#eab308',   // yellow - moderate
+        0.7: '#84cc16',   // lime - good
+        1.0: '#22c55e',   // green - excellent
+      },
+    }).addTo(map);
+
+    return () => {
+      if (heatLayerRef.current) {
+        map.removeLayer(heatLayerRef.current);
+      }
+    };
+  }, [map, points, visible]);
+
   return null;
 }
 
-// Signal quality → radius in metres (bigger for lower frequencies)
-function coverageRadius(frequency) {
-  if (frequency <= 700)  return 1800;
-  if (frequency <= 900)  return 1500;
-  if (frequency <= 1800) return 1100;
-  if (frequency <= 2100) return 900;
-  return 600; // 3500 MHz
-}
-
-// Quality → heatmap color with opacity
-function heatColor(quality) {
-  return {
-    excellent: { color: '#22c55e', fill: '#22c55e', opacity: 0.55 },
-    good:      { color: '#84cc16', fill: '#84cc16', opacity: 0.45 },
-    weak:      { color: '#f97316', fill: '#f97316', opacity: 0.38 },
-    none:      { color: '#ef4444', fill: '#ef4444', opacity: 0.30 },
-  }[quality] || { color: '#ef4444', fill: '#ef4444', opacity: 0.3 };
+// ── Map Click Handler ────────────────────────────────────────────────────────
+function MapClickHandler({ onMapClick }) {
+  useMapEvents({ click: (e) => onMapClick(e.latlng) });
+  return null;
 }
 
 export default function App() {
@@ -127,7 +181,7 @@ export default function App() {
         height: parseFloat(form.height), frequency: parseFloat(form.frequency),
         power: parseFloat(form.power), gain: parseFloat(form.gain),
       });
-      showMsg('✅ Tower added!');
+      showMsg('✅ Tower added! Calculating coverage...');
       await fetchTowers();
       await loadAllCoverage();
     } catch (e) { showMsg('❌ Error adding tower'); }
@@ -146,7 +200,7 @@ export default function App() {
     try {
       const r = await axios.get(`${API}/coverage/all`);
       setCoveragePoints(r.data.points);
-      showMsg(`📡 ${r.data.count} coverage points calculated`);
+      showMsg(`📡 Coverage heatmap loaded — ${r.data.count} points`);
     } catch (e) { showMsg('❌ Coverage failed'); }
     setLoading(false);
   }
@@ -191,12 +245,26 @@ export default function App() {
 
   return (
     <>
-      {/* Pulse animation keyframes */}
+      {/* Animations */}
       <style>{`
+        @keyframes towerSpread {
+          0%   { transform: scale(0.5); opacity: 0.9; }
+          50%  { transform: scale(2.5); opacity: 0.3; }
+          100% { transform: scale(3.5); opacity: 0; }
+        }
         @keyframes towerPulse {
-          0%   { transform: scale(0.8); opacity: 0.8; }
-          70%  { transform: scale(2.2); opacity: 0; }
-          100% { transform: scale(0.8); opacity: 0; }
+          0%   { transform: scale(0.7); opacity: 0.9; }
+          70%  { transform: scale(2.0); opacity: 0; }
+          100% { transform: scale(0.7); opacity: 0; }
+        }
+        @keyframes towerGlow {
+          0%   { box-shadow: 0 0 8px currentColor, 0 0 16px currentColor; }
+          100% { box-shadow: 0 0 16px currentColor, 0 0 32px currentColor; }
+        }
+        /* Hide default leaflet marker when using divIcon */
+        .tower-icon-wrapper {
+          background: transparent !important;
+          border: none !important;
         }
       `}</style>
 
@@ -385,9 +453,10 @@ export default function App() {
 
                 {/* Legend */}
                 <div style={{ marginTop:18 }}>
-                  <div style={sectionHdr}>SIGNAL LEGEND</div>
+                  <div style={sectionHdr}>HEATMAP LEGEND</div>
                   {[['#22c55e','Excellent (≥ -80 dBm)'],['#84cc16','Good (-80 to -95)'],
-                    ['#f97316','Weak (-95 to -110)'],['#ef4444','No Coverage']].map(([c,l]) => (
+                    ['#eab308','Moderate (-95 to -105)'],['#f97316','Weak (-105 to -110)'],
+                    ['#ef4444','No Coverage (< -110 dBm)']].map(([c,l]) => (
                     <div key={l} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
                       <div style={{ width:14, height:14, borderRadius:3, background:c }} />
                       <span style={{ fontSize:11, color:'#b0bec5' }}>{l}</span>
@@ -415,27 +484,10 @@ export default function App() {
               />
               <MapClickHandler onMapClick={onMapClick} />
 
-              {/* Coverage heatmap — large overlapping circles */}
-              {showCoverage && coveragePoints.map((p, i) => {
-                const freq = towers.find(t =>
-                  Math.abs(t.lat - p.lat) < 0.05 && Math.abs(t.lon - p.lon) < 0.05
-                )?.frequency || 900;
-                const hc = heatColor(p.quality);
-                return (
-                  <Circle key={i}
-                    center={[p.lat, p.lon]}
-                    radius={coverageRadius(freq)}
-                    pathOptions={{
-                      color: 'transparent',
-                      fillColor: hc.fill,
-                      fillOpacity: hc.opacity,
-                      weight: 0,
-                    }}
-                  />
-                );
-              })}
+              {/* Real Heatmap Layer */}
+              <HeatmapLayer points={coveragePoints} visible={showCoverage} />
 
-              {/* Tower markers with pulse */}
+              {/* Tower markers with spreading animation */}
               {towers.map(t => (
                 <Marker key={t.id} position={[t.lat, t.lon]} icon={towerIcon(t.operator)}>
                   <Popup>
@@ -464,8 +516,9 @@ export default function App() {
                   position={[suggestion.suggested_lat, suggestion.suggested_lon]}
                   icon={L.divIcon({
                     className: '',
-                    html: `<div style="font-size:24px;filter:drop-shadow(0 0 8px #f59e0b)">💡</div>`,
-                    iconSize: [28, 28], iconAnchor: [14, 14],
+                    html: `<div style="font-size:28px;filter:drop-shadow(0 0 10px #f59e0b);animation:float 2s ease-in-out infinite alternate">💡</div>
+                      <style>@keyframes float { 0%{transform:translateY(0)} 100%{transform:translateY(-6px)} }</style>`,
+                    iconSize: [32, 32], iconAnchor: [16, 16],
                   })}>
                   <Popup>
                     <strong>💡 Suggested Location</strong><br />
@@ -480,7 +533,7 @@ export default function App() {
               display:'flex', flexDirection:'column', gap:6 }}>
               <button onClick={() => setShowCoverage(v => !v)}
                 style={toggleBtn(showCoverage, '#1565c0')}>
-                {showCoverage ? '👁️' : '🚫'} Heatmap
+                {showCoverage ? '🔥' : '🚫'} Heatmap
               </button>
               <button onClick={() => setShowReports(v => !v)}
                 style={toggleBtn(showReports, '#22c55e')}>
@@ -492,7 +545,7 @@ export default function App() {
             <div style={{ position:'absolute', bottom:0, left:0, right:0,
               background:'#0d2137cc', padding:'4px 12px', zIndex:1000,
               display:'flex', justifyContent:'space-between', fontSize:10, color:'#90a4ae' }}>
-              <span>🗼 {towers.length} towers | 🗺️ {coveragePoints.length} pts | 📊 {signalReports.length} reports</span>
+              <span>🗼 {towers.length} towers | 🔥 {coveragePoints.length} heatmap pts | 📊 {signalReports.length} reports</span>
               <span>Tele-Twin v1.0 — Okumura-Hata RF Model</span>
             </div>
 
