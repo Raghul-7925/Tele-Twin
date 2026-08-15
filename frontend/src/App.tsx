@@ -19,7 +19,7 @@ import {
   getTowers, addTower, deleteTower, getMeasurements, addMeasurement,
   rfSimulate, rfPointEstimate, rfCompareModels, getCoverageAll, rfQuickEstimate,
   importTowers, importMeasurements, getRecommendations,
-  getPredictionVsMeasurement,
+  getPredictionVsMeasurement, getRealTowers, getRealTowerFiles,
 } from './services/api';
 
 // ── Fix leaflet default icons ────────────────────────────────────────────────
@@ -97,6 +97,61 @@ function HeatmapLayer({ points, visible }: { points: RFPointResult[]; visible: b
   return null;
 }
 
+// ── Real Towers GeoJSON Layer ───────────────────────────────────────────────
+const REAL_TOWER_COLORS: Record<string, string> = {
+  Ground: '#22c55e',
+  Rooftop: '#3b82f6',
+  WallMount: '#ec4899',
+  ground: '#22c55e',
+  rooftop: '#3b82f6',
+  wall_mount: '#ec4899',
+  wallmount: '#ec4899',
+};
+
+function RealTowersLayer({ data, visible }: { data: any; visible: boolean }) {
+  const map = useMap();
+  const layerRef = useRef<L.LayerGroup | null>(null);
+
+  useEffect(() => {
+    if (!map) return;
+    if (layerRef.current) {
+      map.removeLayer(layerRef.current);
+      layerRef.current = null;
+    }
+    if (!visible || !data || !data.features || !data.features.length) return;
+
+    const layer = L.layerGroup();
+    data.features.forEach((f: any) => {
+      const coords = f.geometry?.coordinates;
+      if (!coords || coords.length < 2) return;
+      const [lon, lat] = coords;
+      const props = f.properties || {};
+      const towerType = props.type || 'Rooftop';
+      const color = REAL_TOWER_COLORS[towerType] || '#6b7280';
+
+      const marker = L.circleMarker([lat, lon], {
+        radius: 3,
+        fillColor: color,
+        fillOpacity: 0.7,
+        stroke: true,
+        color: '#fff',
+        weight: 0.5,
+      });
+      marker.bindTooltip(
+        `🗼 ${towerType} | ID: ${props.tower_id || 'N/A'}\n📍 ${lat.toFixed(4)}, ${lon.toFixed(4)}`,
+        { sticky: true }
+      );
+      layer.addLayer(marker);
+    });
+    layer.addTo(map);
+    layerRef.current = layer;
+
+    return () => { if (layerRef.current) map.removeLayer(layerRef.current); };
+  }, [map, data, visible]);
+
+  return null;
+}
+
 // ── Map click handler ────────────────────────────────────────────────────────
 function MapClickHandler({ onClick }: { onClick: (latlng: L.LatLng) => void }) {
   useMapEvents({ click: (e) => onClick(e.latlng) });
@@ -116,6 +171,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'towers' | 'planning' | 'crowdsourced' | 'analysis' | 'ai' | 'import'>('towers');
   const [showCoverage, setShowCoverage] = useState(true);
   const [showMeasurements, setShowMeasurements] = useState(true);
+  const [showRealTowers, setShowRealTowers] = useState(true);
+  const [realTowersData, setRealTowersData] = useState<any>(null);
+  const [realTowerFiles, setRealTowerFiles] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState('');
 
@@ -149,7 +207,16 @@ export default function App() {
     try { const r = await getMeasurements(); setMeasurements(r.data); } catch {}
   }, []);
 
-  useEffect(() => { loadTowers(); loadMeasurements(); }, [loadTowers, loadMeasurements]);
+  const loadRealTowers = useCallback(async () => {
+    try {
+      const r = await getRealTowers();
+      setRealTowersData(r.data);
+      const filesR = await getRealTowerFiles();
+      setRealTowerFiles(filesR.data.files || []);
+    } catch {}
+  }, []);
+
+  useEffect(() => { loadTowers(); loadMeasurements(); loadRealTowers(); }, [loadTowers, loadMeasurements, loadRealTowers]);
 
   // ── Tower actions ──────────────────────────────────────────────────────────
   const handleAddTower = async () => {
@@ -699,6 +766,9 @@ export default function App() {
               {/* Coverage heatmap */}
               <HeatmapLayer points={coveragePoints} visible={showCoverage} />
 
+              {/* Real towers from GeoJSON */}
+              <RealTowersLayer data={realTowersData} visible={showRealTowers} />
+
               {/* Existing towers */}
               {towers.map(t => (
                 <Marker key={t.id} position={[t.latitude, t.longitude]} icon={towerIcon(t.operator_name, t.tower_type, false)}>
@@ -733,6 +803,9 @@ export default function App() {
               <button onClick={() => setShowMeasurements(v => !v)} style={{...btn(showMeasurements ? '#22c55e' : '#1e3a5f'), fontSize: 11}}>
                 {showMeasurements ? '👁️' : '🚫'} Reports
               </button>
+              <button onClick={() => setShowRealTowers(v => !v)} style={{...btn(showRealTowers ? '#f59e0b' : '#1e3a5f'), fontSize: 11}}>
+                {showRealTowers ? '🗼' : '🚫'} Real Towers
+              </button>
             </div>
 
             {/* Point inspection panel */}
@@ -758,7 +831,7 @@ export default function App() {
 
             {/* Status bar */}
             <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: '#0d2137cc', padding: '4px 12px', zIndex: 1000, display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#90a4ae' }}>
-              <span>🗼 {towers.length} towers | 🔥 {coveragePoints.length} heatmap pts | 📊 {measurements.length} reports</span>
+              <span>🗼 {towers.length} towers | 📡 {realTowersData?.total || 0} real towers | 🔥 {coveragePoints.length} pts | 📊 {measurements.length} reports</span>
               <span>Tele-Twin v2.0 — Okumura-Hata / COST-231 / FSPL</span>
             </div>
 

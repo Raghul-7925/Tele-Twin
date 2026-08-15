@@ -3,6 +3,7 @@ API routes for Tele-Twin.
 """
 import json
 import sqlite3
+import os
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from typing import Optional
 
@@ -67,6 +68,73 @@ def _tower_to_response(row) -> dict:
 @router.get("/health")
 def health():
     return {"status": "ok", "project": "Tele-Twin", "version": "2.0.0"}
+
+
+# ── Real Tower Data (GeoJSON from data/ folder) ──────────────────────────────
+
+@router.get("/real-towers")
+def get_real_towers(file: Optional[str] = None):
+    """
+    Serve real tower GeoJSON data from the data/ directory.
+    If no file specified, serves all .json/.geojson files merged.
+    """
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data")
+    if not os.path.isdir(data_dir):
+        return {"type": "FeatureCollection", "features": []}
+
+    features = []
+    files_found = []
+
+    if file:
+        # Specific file
+        filepath = os.path.join(data_dir, file)
+        if not os.path.isfile(filepath):
+            raise HTTPException(status_code=404, detail=f"File {file} not found")
+        with open(filepath) as f:
+            data = json.load(f)
+        features = data.get("features", [])
+        files_found = [file]
+    else:
+        # All GeoJSON files in data/
+        for fname in sorted(os.listdir(data_dir)):
+            if fname.endswith(".json") or fname.endswith(".geojson"):
+                filepath = os.path.join(data_dir, fname)
+                try:
+                    with open(filepath) as f:
+                        data = json.load(f)
+                    file_features = data.get("features", [])
+                    features.extend(file_features)
+                    files_found.append(fname)
+                except Exception:
+                    continue
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "source_files": files_found,
+        "total": len(features),
+    }
+
+
+@router.get("/real-towers/files")
+def list_real_tower_files():
+    """List available GeoJSON data files."""
+    data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data")
+    if not os.path.isdir(data_dir):
+        return {"files": []}
+
+    files = []
+    for fname in sorted(os.listdir(data_dir)):
+        if fname.endswith(".json") or fname.endswith(".geojson"):
+            filepath = os.path.join(data_dir, fname)
+            try:
+                with open(filepath) as f:
+                    data = json.load(f)
+                count = len(data.get("features", []))
+                files.append({"name": fname, "features": count})
+            except Exception:
+                files.append({"name": fname, "features": 0})
+    return {"files": files}
 
 
 # ── Towers ────────────────────────────────────────────────────────────────────

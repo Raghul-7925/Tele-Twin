@@ -15,6 +15,14 @@ const api = axios.create({ baseURL: API });
 
 export const getHealth = () => api.get('/api/health');
 
+// ── Real Tower Data ──────────────────────────────────────────────────────────
+
+export const getRealTowers = (file?: string) =>
+  api.get('/api/real-towers', { params: file ? { file } : {} });
+
+export const getRealTowerFiles = () =>
+  api.get('/api/real-towers/files');
+
 // ── Towers ───────────────────────────────────────────────────────────────────
 
 export const getTowers = (operator?: string, technology?: string, towerType?: string) => {
