@@ -56,6 +56,9 @@ export const addMeasurement = (m: MeasurementCreate) =>
 
 // ── RF Simulation ────────────────────────────────────────────────────────────
 
+export const rfQuickEstimate = (band: string, environment: string, lat: number, lon: number) =>
+  api.post('/api/rf/quick-estimate', null, { params: { band, environment, lat, lon } });
+
 export const rfSimulate = (req: RFSimulateRequest) =>
   api.post<{ count: number; points: RFPointResult[]; model: string; environment: string; is_proposed: boolean }>('/api/rf/simulate', req);
 

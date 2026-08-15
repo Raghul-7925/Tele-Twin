@@ -17,7 +17,7 @@ import {
 } from './types';
 import {
   getTowers, addTower, deleteTower, getMeasurements, addMeasurement,
-  rfSimulate, rfPointEstimate, rfCompareModels, getCoverageAll,
+  rfSimulate, rfPointEstimate, rfCompareModels, getCoverageAll, rfQuickEstimate,
   importTowers, importMeasurements, getRecommendations,
   getPredictionVsMeasurement,
 } from './services/api';
@@ -32,6 +32,11 @@ L.Icon.Default.mergeOptions({
 
 // ── Map center (Puducherry area) ─────────────────────────────────────────────
 const MAP_CENTER: [number, number] = [11.9416, 79.8083];
+
+// Frequency → band mapping for quick estimate
+const FREQUENCY_TO_BAND: Record<number, string> = {
+  700: 'n28', 850: 'B5', 900: 'B8', 1800: 'B3', 2100: 'B1', 2300: 'B40', 2500: 'B41', 3500: 'n78',
+};
 
 // ── Helper: Tower marker icon ────────────────────────────────────────────────
 function towerIcon(operator: string, towerType: string = 'ground', isProposed: boolean = false): L.DivIcon {
@@ -151,16 +156,22 @@ export default function App() {
     if (!towerForm.lat || !towerForm.lon) return toast('📍 Tap map to set location');
     setLoading(true);
     try {
-      await addTower({
+      const payload = {
         latitude: parseFloat(towerForm.lat),
         longitude: parseFloat(towerForm.lon),
-        height_m: towerForm.height,
+        height_m: parseFloat(String(towerForm.height)) || 30,
         operator_name: towerForm.operator,
-        tower_type: towerForm.towerType as any,
-      });
-      toast('✅ Tower added');
+        tower_type: towerForm.towerType,
+      };
+      console.log('Adding tower:', payload);
+      const res = await addTower(payload as any);
+      console.log('Tower added:', res.data);
+      toast(`✅ Tower #${res.data.id} added`);
       await loadTowers();
-    } catch { toast('❌ Error adding tower'); }
+    } catch (err: any) {
+      console.error('Add tower error:', err?.response?.data || err);
+      toast(`❌ ${err?.response?.data?.detail || 'Error adding tower'}`);
+    }
     setLoading(false);
   };
 
@@ -195,6 +206,18 @@ export default function App() {
       setCoveragePoints(r.data.points);
       toast(`📡 Coverage: ${r.data.count} points (${r.data.model})`);
     } catch { toast('❌ Simulation failed'); }
+    setLoading(false);
+  };
+
+  const handleQuickEstimate = async () => {
+    if (!towerForm.lat || !towerForm.lon) return toast('📍 Tap map to set location');
+    setLoading(true);
+    try {
+      const band = FREQUENCY_TO_BAND[towerForm.frequency] || 'B8';
+      const r = await rfQuickEstimate(band, towerForm.environment, parseFloat(towerForm.lat), parseFloat(towerForm.lon));
+      setCoveragePoints(r.data.points);
+      toast(`⚡ Quick estimate: ${r.data.count} points (${r.data.band} ${r.data.frequency_mhz} MHz, ${r.data.model})`);
+    } catch { toast('❌ Quick estimate failed'); }
     setLoading(false);
   };
 
@@ -386,6 +409,25 @@ export default function App() {
             <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
               {/* ── TOWERS TAB ────────────────────────────────────────────── */}
               {activeTab === 'towers' && <>
+                {/* Quick Estimate - Band Only */}
+                <div style={{...card, borderColor: '#0891b255'}}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#0891b2', marginBottom: 4 }}>⚡ Quick Estimate</div>
+                  <div style={{ fontSize: 10, color: '#90a4ae', marginBottom: 8 }}>
+                    Tap map → select band → get instant coverage estimate
+                  </div>
+                  <div style={row}>
+                    <span style={label}>Band</span>
+                    <select style={input} value={towerForm.frequency} onChange={e => setTowerForm(f => ({...f, frequency: +e.target.value}))}>
+                      {FREQUENCIES.map(f => <option key={f} value={f}>{f} MHz</option>)}
+                    </select>
+                  </div>
+                  <button onClick={handleQuickEstimate} disabled={loading || !towerForm.lat} style={{...btn('#0891b2'), width:'100%', padding:'10px', marginTop: 4}}>
+                    {loading ? '⏳' : '⚡'} Quick Estimate
+                  </button>
+                  {!towerForm.lat && <div style={{ fontSize: 10, color: '#f97316', marginTop: 4 }}>📍 Tap map first</div>}
+                </div>
+
+                {/* Full Tower Config */}
                 <div style={card}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: '#00bcd4', marginBottom: 8 }}>🗼 Add Tower</div>
                   <div style={{ ...row, fontSize: 10, color: '#90a4ae', background: '#0d2137', borderRadius: 4, padding: '4px 8px', marginBottom: 8 }}>Tap map to set location</div>
@@ -466,6 +508,9 @@ export default function App() {
                   ))}
                   <button onClick={handleSimulate} disabled={loading} style={{...btn('#1565c0'), width:'100%', padding:'9px', marginTop:8}}>
                     {loading ? '⏳ Computing...' : '🔥 Generate Coverage'}
+                  </button>
+                  <button onClick={handleQuickEstimate} disabled={loading} style={{...btn('#0891b2'), width:'100%', padding:'9px', marginTop:6}}>
+                    ⚡ Quick Estimate (Band Only)
                   </button>
                   <button onClick={handleCompareModels} disabled={loading} style={{...btn('#7c3aed'), width:'100%', padding:'9px', marginTop:6}}>
                     📊 Compare All Models

@@ -388,6 +388,60 @@ def rf_compare_models(req: ModelComparisonRequest):
 
 # ── Coverage for all towers ──────────────────────────────────────────────────
 
+@router.post("/rf/quick-estimate")
+def rf_quick_estimate(band: str = "B8", environment: str = "urban", lat: float = 11.94, lon: float = 79.81):
+    """
+    Quick coverage estimate using only band name.
+    Auto-fills typical Indian macro cell defaults.
+    """
+    from ..rf.engine import select_propagation_model
+
+    # Band → frequency mapping with typical Indian parameters
+    band_defaults = {
+        "n28": {"freq": 700, "height": 40, "power": 43, "gain": 17, "label": "700 MHz (5G NR)"},
+        "B5":  {"freq": 850, "height": 35, "power": 43, "gain": 15, "label": "850 MHz"},
+        "B8":  {"freq": 900, "height": 30, "power": 43, "gain": 15, "label": "900 MHz"},
+        "B3":  {"freq": 1800, "height": 30, "power": 43, "gain": 15, "label": "1800 MHz"},
+        "B1":  {"freq": 2100, "height": 25, "power": 40, "gain": 15, "label": "2100 MHz"},
+        "B40": {"freq": 2300, "height": 25, "power": 40, "gain": 12, "label": "2300 MHz"},
+        "B41": {"freq": 2500, "height": 25, "power": 40, "gain": 12, "label": "2500 MHz"},
+        "n78": {"freq": 3500, "height": 25, "power": 40, "gain": 15, "label": "3500 MHz (5G NR)"},
+    }
+
+    defaults = band_defaults.get(band, band_defaults["B8"])
+    freq = defaults["freq"]
+    model = select_propagation_model(freq, "auto")
+
+    points = generate_coverage_grid(
+        tower_lat=lat,
+        tower_lon=lon,
+        tower_height_m=defaults["height"],
+        frequency_mhz=freq,
+        power_dbm=defaults["power"],
+        gain_dbi=defaults["gain"],
+        model=model,
+        environment=environment,
+        grid_steps=40,
+    )
+
+    return {
+        "count": len(points),
+        "points": points,
+        "model": model,
+        "band": band,
+        "frequency_mhz": freq,
+        "defaults_used": {
+            "height_m": defaults["height"],
+            "power_dbm": defaults["power"],
+            "gain_dbi": defaults["gain"],
+            "azimuth": 0,
+            "note": "Typical Indian macro cell defaults used. Refine with actual tower specs for accuracy.",
+        },
+        "environment": environment,
+        "is_estimate": True,
+    }
+
+
 @router.get("/coverage/all")
 def coverage_all(model: str = "Okumura-Hata", environment: str = "urban"):
     """Generate coverage for all towers in the database."""
