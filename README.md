@@ -172,8 +172,8 @@ latitude,longitude,height,operator,tower_type,frequency,technology
 
 ## ECE Final Year Project
 
-- **Student:** D. Abarna (421123104001)
-- **Guide:** Mrs. D. Vasanthi, M.E., (Ph.D)
+- **Student:** P. Raghul (421123104067)
+- **Guide:** Dr.U.Palani, Professor
 - **Subject Code:** 23EC8701
 
 ## License
