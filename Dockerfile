@@ -8,12 +8,11 @@ RUN apt-get update && apt-get install -y curl && \
 
 WORKDIR /app
 
-# Install Python deps
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy everything
+# Copy everything first
 COPY . .
+
+# Install Python deps
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Build frontend
 RUN cd frontend && npm install && npm run build
