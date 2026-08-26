@@ -1,8 +1,11 @@
 [phases.setup]
-nixPkgs = ["python3", "pip"]
+nixPkgs = ["python3", "pip", "nodejs", "npm"]
 
 [phases.install]
-cmds = ["python3 -m pip install -r requirements.txt"]
+cmds = [
+  "python3 -m pip install -r requirements.txt",
+  "cd frontend && npm install && npm run build"
+]
 
 [start]
 cmd = "python3 -m uvicorn main:app --host 0.0.0.0 --port $PORT"
