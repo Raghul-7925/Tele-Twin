@@ -11,9 +11,10 @@ import 'leaflet/dist/leaflet.css';
 import './index.css';
 import {
   Tower, Measurement, RFPointResult, AIRecommendation,
-  ModelComparisonResult, PropagationModel, Environment,
+  ModelComparisonResult, PropagationModel, Environment, Technology,
   OPERATOR_COLORS, TOWER_TYPE_COLORS, OPERATORS, TECHNOLOGIES,
-  FREQUENCIES, MODELS, ENVIRONMENTS,
+  MODELS, ENVIRONMENTS, TECHNOLOGY_BANDS, QUICK_ESTIMATE_DEFAULTS,
+  getBandsForTechnology, getDefaultBand, BandInfo,
 } from './types';
 import {
   getTowers, addTower, deleteTower, getMeasurements, addMeasurement,
@@ -33,25 +34,18 @@ L.Icon.Default.mergeOptions({
 // ── Map center (Puducherry area) ─────────────────────────────────────────────
 const MAP_CENTER: [number, number] = [11.9416, 79.8083];
 
-// Frequency → band mapping for quick estimate
-const FREQUENCY_TO_BAND: Record<number, string> = {
-  700: 'n28', 850: 'B5', 900: 'B8', 1800: 'B3', 2100: 'B1', 2300: 'B40', 2500: 'B41', 3500: 'n78',
-};
-
 // ── Helper: Tower marker icon ────────────────────────────────────────────────
 function towerIcon(operator: string, towerType: string = 'ground', isProposed: boolean = false): L.DivIcon {
   const color = isProposed ? '#f59e0b' : (TOWER_TYPE_COLORS[towerType] || '#22c55e');
-  const opColor = OPERATOR_COLORS[operator] || '#6b7280';
   const label = isProposed ? '💡' : '🗼';
-  const border = isProposed ? 'dashed' : 'solid';
 
   return L.divIcon({
     className: 'tower-marker',
     html: `
       <div style="position:relative;width:50px;height:50px;display:flex;align-items:center;justify-content:center;">
-        <div style="position:absolute;width:50px;height:50px;border-radius:50%;background:radial-gradient(circle,${color}44 0%,${color}00 70%);border:2px ${border} ${color}66;animation:towerSpread 2.5s ease-out infinite;"></div>
-        <div style="position:absolute;width:30px;height:30px;border-radius:50%;background:radial-gradient(circle,${color}55 0%,${color}00 70%);border:2px ${border} ${color}88;animation:towerPulse 1.8s ease-out infinite;"></div>
-        <div style="position:absolute;width:18px;height:18px;border-radius:50%;background:${color}cc;border:2px ${border} ${color};box-shadow:0 0 10px ${color}88;"></div>
+        <div style="position:absolute;width:50px;height:50px;border-radius:50%;background:radial-gradient(circle,${color}44 0%,${color}00 70%);border:2px ${isProposed ? 'dashed' : 'solid'} ${color}66;animation:towerSpread 2.5s ease-out infinite;"></div>
+        <div style="position:absolute;width:30px;height:30px;border-radius:50%;background:radial-gradient(circle,${color}55 0%,${color}00 70%);border:2px ${isProposed ? 'dashed' : 'solid'} ${color}88;animation:towerPulse 1.8s ease-out infinite;"></div>
+        <div style="position:absolute;width:18px;height:18px;border-radius:50%;background:${color}cc;border:2px ${isProposed ? 'dashed' : 'solid'} ${color};box-shadow:0 0 10px ${color}88;"></div>
         <div style="position:relative;z-index:2;font-size:16px;filter:drop-shadow(0 0 4px ${color});">${label}</div>
       </div>
     `,
@@ -61,7 +55,24 @@ function towerIcon(operator: string, towerType: string = 'ground', isProposed: b
   });
 }
 
-// ── Heatmap Layer ────────────────────────────────────────────────────────────
+// ── Real Tower icon (for GeoJSON real towers) ────────────────────────────────
+function realTowerIcon(towerType: string): L.DivIcon {
+  const color = TOWER_TYPE_COLORS[towerType] || TOWER_TYPE_COLORS[towerType.toLowerCase()] || '#6b7280';
+  return L.divIcon({
+    className: 'tower-marker',
+    html: `
+      <div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center;">
+        <div style="position:absolute;width:36px;height:36px;border-radius:50%;background:radial-gradient(circle,${color}33 0%,${color}00 70%);border:1.5px solid ${color}55;"></div>
+        <div style="position:relative;z-index:2;font-size:18px;filter:drop-shadow(0 1px 3px ${color});">🗼</div>
+      </div>
+    `,
+    iconSize: [36, 36],
+    iconAnchor: [18, 18],
+    popupAnchor: [0, -18],
+  });
+}
+
+// ── Heatmap Layer (zoom-adaptive) ────────────────────────────────────────────
 function HeatmapLayer({ points, visible }: { points: RFPointResult[]; visible: boolean }) {
   const map = useMap();
   const layerRef = useRef<L.LayerGroup | null>(null);
@@ -74,40 +85,59 @@ function HeatmapLayer({ points, visible }: { points: RFPointResult[]; visible: b
     }
     if (!visible || !points.length) return;
 
-    const layer = L.layerGroup();
-    points.forEach(p => {
-      const marker = L.circleMarker([p.latitude, p.longitude], {
-        radius: 4,
-        fillColor: p.coverage_color,
-        fillOpacity: 0.6,
-        stroke: false,
-      });
-      marker.bindTooltip(
-        `RSRP: ${p.predicted_rsrp} dBm (${p.coverage_class})\nDist: ${p.distance_km} km\nModel: ${p.propagation_model}`,
-        { sticky: true }
-      );
-      layer.addLayer(marker);
-    });
-    layer.addTo(map);
-    layerRef.current = layer;
+    const renderHeatmap = () => {
+      if (layerRef.current) {
+        map.removeLayer(layerRef.current);
+        layerRef.current = null;
+      }
 
-    return () => { if (layerRef.current) map.removeLayer(layerRef.current); };
+      const zoom = map.getZoom();
+      const layer = L.layerGroup();
+
+      // Zoom-adaptive sizing: higher zoom = bigger, more solid circles
+      // At zoom11: radius3, opacity0.3 (dots)
+      // At zoom14: radius8, opacity0.5 (clear zones)
+      // At zoom16+: radius15, opacity0.65 (full coverage areas)
+      const baseRadius = Math.max(3, Math.min(20, (zoom - 9) * 2.5));
+      const baseOpacity = Math.max(0.2, Math.min(0.65, (zoom - 9) * 0.08));
+
+      // At high zoom, merge nearby points by grouping
+      // Use larger circles to create continuous coverage zones
+      const step = zoom >= 15 ? 1 : zoom >= 13 ? 1 : 2;
+      for (let i =0; i < points.length; i += step) {
+        const p = points[i];
+        const marker = L.circleMarker([p.latitude, p.longitude], {
+          radius: baseRadius,
+          fillColor: p.coverage_color,
+          fillOpacity: baseOpacity,
+          stroke: zoom >= 14,
+          color: p.coverage_color,
+          weight: zoom >= 14 ? 0.5 : 0,
+          opacity: zoom >= 14 ? 0.3 : 0,
+        });
+        marker.bindTooltip(
+          `📡 RSRP: ${p.predicted_rsrp} dBm (${p.coverage_class})\n📍 ${p.distance_km} km\n🔧 ${p.propagation_model}`,
+          { sticky: true, className: 'rf-tooltip' }
+        );
+        layer.addLayer(marker);
+      }
+      layer.addTo(map);
+      layerRef.current = layer;
+    };
+
+    renderHeatmap();
+    map.on('zoomend', renderHeatmap);
+
+    return () => {
+      map.off('zoomend', renderHeatmap);
+      if (layerRef.current) map.removeLayer(layerRef.current);
+    };
   }, [map, points, visible]);
 
   return null;
 }
 
-// ── Real Towers GeoJSON Layer ───────────────────────────────────────────────
-const REAL_TOWER_COLORS: Record<string, string> = {
-  Ground: '#22c55e',
-  Rooftop: '#3b82f6',
-  WallMount: '#ec4899',
-  ground: '#22c55e',
-  rooftop: '#3b82f6',
-  wall_mount: '#ec4899',
-  wallmount: '#ec4899',
-};
-
+// ── Real Towers GeoJSON Layer (with tower icons) ─────────────────────────────
 function RealTowersLayer({ data, visible }: { data: any; visible: boolean }) {
   const map = useMap();
   const layerRef = useRef<L.LayerGroup | null>(null);
@@ -126,20 +156,23 @@ function RealTowersLayer({ data, visible }: { data: any; visible: boolean }) {
       if (!coords || coords.length < 2) return;
       const [lon, lat] = coords;
       const props = f.properties || {};
-      const towerType = props.type || 'Rooftop';
-      const color = REAL_TOWER_COLORS[towerType] || '#6b7280';
+      const towerType = props.type || props.tower_type || 'Rooftop';
+      // Normalize tower type for color lookup
+      const normalizedType = towerType.toLowerCase().replace(/[_\s]/g, '');
+      const colorKey = normalizedType === 'ground' ? 'ground' :
+                       normalizedType === 'rooftop' ? 'rooftop' :
+                       normalizedType.includes('wall') ? 'wall_mount' : 'ground';
 
-      const marker = L.circleMarker([lat, lon], {
-        radius: 3,
-        fillColor: color,
-        fillOpacity: 0.7,
-        stroke: true,
-        color: '#fff',
-        weight: 0.5,
+      const marker = L.marker([lat, lon], {
+        icon: realTowerIcon(colorKey),
       });
-      marker.bindTooltip(
-        `🗼 ${towerType} | ID: ${props.tower_id || 'N/A'}\n📍 ${lat.toFixed(4)}, ${lon.toFixed(4)}`,
-        { sticky: true }
+      marker.bindPopup(
+        `<div style="font-size:13px;line-height:1.6">` +
+        `<strong>🗼 ${towerType}</strong><br>` +
+        `ID: ${props.tower_id || props.id || 'N/A'}<br>` +
+        `📍 ${lat.toFixed(5)}, ${lon.toFixed(5)}<br>` +
+        `${props.operator ? `Operator: ${props.operator}` : ''}` +
+        `</div>`
       );
       layer.addLayer(marker);
     });
@@ -177,17 +210,26 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState('');
 
-  // Tower form
+  // Tower form — with technology selection
   const [towerForm, setTowerForm] = useState({
-    lat: '', lon: '', height: 30, frequency: 900, power: 43, gain: 15,
-    operator: 'BSNL', towerType: 'ground' as string,
-    model: 'Okumura-Hata' as PropagationModel, environment: 'urban' as Environment,
+    lat: '', lon: '', height: 30, operator: 'BSNL', towerType: 'ground' as string,
+    technology: '4G' as Technology,
+    band: 'B1' as string,
+    frequency: 2100 as number,
+    power: 40 as number,
+    gain: 15 as number,
+    model: 'Okumura-Hata' as PropagationModel,
+    environment: 'urban' as Environment,
     azimuth: 0, hBeamwidth: 65, vBeamwidth: 7, eTilt: 0, mTilt: 0,
   });
 
+  // Derived: available bands for current technology
+  const availableBands = getBandsForTechnology(towerForm.technology);
+
   // Measurement form
   const [measForm, setMeasForm] = useState({
-    lat: '', lon: '', rsrp: -85, rsrq: -11, sinr: 12, operator: 'BSNL', tech: '4G',
+    lat: '', lon: '', rsrp: -85, rsrq: -11, sinr: 12, operator: 'BSNL', tech: '4G' as Technology,
+    band: 'B1' as string,
   });
 
   // RF point inspection
@@ -197,6 +239,28 @@ export default function App() {
     setMsg(m);
     setTimeout(() => setMsg(''), 3500);
   }, []);
+
+  // ── When technology changes, update band/frequency to first available ──
+  const handleTechnologyChange = useCallback((tech: Technology) => {
+    const bands = getBandsForTechnology(tech);
+    const firstBand = bands[0];
+    setTowerForm(f => ({
+      ...f,
+      technology: tech,
+      band: firstBand?.band || 'B8',
+      frequency: firstBand?.frequency_mhz || 900,
+    }));
+  }, []);
+
+  // ── When band changes, update frequency ──
+  const handleBandChange = useCallback((band: string) => {
+    const bandInfo = availableBands.find(b => b.band === band);
+    setTowerForm(f => ({
+      ...f,
+      band,
+      frequency: bandInfo?.frequency_mhz || f.frequency,
+    }));
+  }, [availableBands]);
 
   // ── Data loading ───────────────────────────────────────────────────────────
   const loadTowers = useCallback(async () => {
@@ -230,13 +294,10 @@ export default function App() {
         operator_name: towerForm.operator,
         tower_type: towerForm.towerType,
       };
-      console.log('Adding tower:', payload);
       const res = await addTower(payload as any);
-      console.log('Tower added:', res.data);
-      toast(`✅ Tower #${res.data.id} added`);
+      toast(`✅ Tower #${res.data.id} added (${towerForm.technology} ${towerForm.band})`);
       await loadTowers();
     } catch (err: any) {
-      console.error('Add tower error:', err?.response?.data || err);
       toast(`❌ ${err?.response?.data?.detail || 'Error adding tower'}`);
     }
     setLoading(false);
@@ -271,7 +332,7 @@ export default function App() {
         is_proposed: true,
       });
       setCoveragePoints(r.data.points);
-      toast(`📡 Coverage: ${r.data.count} points (${r.data.model})`);
+      toast(`📡 Coverage: ${r.data.count} points (${towerForm.technology} ${towerForm.band} ${towerForm.frequency}MHz, ${r.data.model})`);
     } catch { toast('❌ Simulation failed'); }
     setLoading(false);
   };
@@ -280,10 +341,9 @@ export default function App() {
     if (!towerForm.lat || !towerForm.lon) return toast('📍 Tap map to set location');
     setLoading(true);
     try {
-      const band = FREQUENCY_TO_BAND[towerForm.frequency] || 'B8';
-      const r = await rfQuickEstimate(band, towerForm.environment, parseFloat(towerForm.lat), parseFloat(towerForm.lon));
+      const r = await rfQuickEstimate(towerForm.band, towerForm.environment, parseFloat(towerForm.lat), parseFloat(towerForm.lon));
       setCoveragePoints(r.data.points);
-      toast(`⚡ Quick estimate: ${r.data.count} points (${r.data.band} ${r.data.frequency_mhz} MHz, ${r.data.model})`);
+      toast(`⚡ Quick estimate: ${r.data.count} points (${towerForm.technology} ${towerForm.band} ${towerForm.frequency}MHz, ${r.data.model})`);
     } catch { toast('❌ Quick estimate failed'); }
     setLoading(false);
   };
@@ -329,8 +389,6 @@ export default function App() {
         operator_name: measForm.operator,
         technology_name: measForm.tech,
         rsrp: measForm.rsrp,
-        rsrq: measForm.rsrp ? undefined : undefined,
-        sinr: undefined,
       });
       toast('✅ Measurement submitted');
       await loadMeasurements();
@@ -393,7 +451,7 @@ export default function App() {
     toast(`📍 Location set: ${lat}, ${lon}`);
   }, [toast]);
 
-  // ── Point inspection (click on coverage) ───────────────────────────────────
+  // ── Point inspection ───────────────────────────────────────────────────────
   const handlePointInspection = async (lat: number, lon: number) => {
     if (!towerForm.lat || !towerForm.lon) return;
     try {
@@ -438,6 +496,7 @@ export default function App() {
         .tower-marker { background:transparent!important; border:none!important; }
         .sidebar-tab { flex:1; padding:8px 4px; font-size:11px; font-weight:600; border:none; cursor:pointer; background:transparent; color:#90a4ae; border-bottom:2px solid transparent; }
         .sidebar-tab.active { background:#1565c0; color:#fff; border-bottom-color:#00bcd4; }
+        .rf-tooltip { font-size:11px; background:#0d2137ee!important; border:1px solid #1e3a5f!important; color:#fff!important; border-radius:6px!important; padding:6px 10px!important; }
       `}</style>
 
       <div style={{ display: 'flex', height: '100vh', flexDirection: 'column', background: '#0a1628' }}>
@@ -476,20 +535,30 @@ export default function App() {
             <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
               {/* ── TOWERS TAB ────────────────────────────────────────────── */}
               {activeTab === 'towers' && <>
-                {/* Quick Estimate - Band Only */}
+                {/* Quick Estimate */}
                 <div style={{...card, borderColor: '#0891b255'}}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: '#0891b2', marginBottom: 4 }}>⚡ Quick Estimate</div>
                   <div style={{ fontSize: 10, color: '#90a4ae', marginBottom: 8 }}>
-                    Tap map → select band → get instant coverage estimate
+                    Tap map → select technology & band → get instant coverage
+                  </div>
+                  <div style={row}>
+                    <span style={label}>Technology</span>
+                    <select style={input} value={towerForm.technology} onChange={e => handleTechnologyChange(e.target.value as Technology)}>
+                      {TECHNOLOGIES.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
                   </div>
                   <div style={row}>
                     <span style={label}>Band</span>
-                    <select style={input} value={towerForm.frequency} onChange={e => setTowerForm(f => ({...f, frequency: +e.target.value}))}>
-                      {FREQUENCIES.map(f => <option key={f} value={f}>{f} MHz</option>)}
+                    <select style={input} value={towerForm.band} onChange={e => handleBandChange(e.target.value)}>
+                      {availableBands.map(b => <option key={b.band} value={b.band}>{b.label}</option>)}
                     </select>
                   </div>
+                  <div style={row}>
+                    <span style={label}>Frequency</span>
+                    <input style={{...input, background: '#0a1628', color: '#607d8b'}} value={`${towerForm.frequency} MHz`} readOnly />
+                  </div>
                   <button onClick={handleQuickEstimate} disabled={loading || !towerForm.lat} style={{...btn('#0891b2'), width:'100%', padding:'10px', marginTop: 4}}>
-                    {loading ? '⏳' : '⚡'} Quick Estimate
+                    {loading ? '⏳' : '⚡'} Quick Estimate ({towerForm.technology} {towerForm.band})
                   </button>
                   {!towerForm.lat && <div style={{ fontSize: 10, color: '#f97316', marginTop: 4 }}>📍 Tap map first</div>}
                 </div>
@@ -519,9 +588,15 @@ export default function App() {
                     </select>
                   </div>
                   <div style={row}>
-                    <span style={label}>Frequency</span>
-                    <select style={input} value={towerForm.frequency} onChange={e => setTowerForm(f => ({...f, frequency: +e.target.value}))}>
-                      {FREQUENCIES.map(f => <option key={f} value={f}>{f} MHz</option>)}
+                    <span style={label}>Technology</span>
+                    <select style={input} value={towerForm.technology} onChange={e => handleTechnologyChange(e.target.value as Technology)}>
+                      {TECHNOLOGIES.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                  <div style={row}>
+                    <span style={label}>Band</span>
+                    <select style={input} value={towerForm.band} onChange={e => handleBandChange(e.target.value)}>
+                      {availableBands.map(b => <option key={b.band} value={b.band}>{b.label}</option>)}
                     </select>
                   </div>
                   {[['height','Height (m)'],['power','Power (dBm)'],['gain','Gain (dBi)'],['azimuth','Azimuth (°)']].map(([k,l]) => (
@@ -530,7 +605,9 @@ export default function App() {
                       <input style={input} type="number" value={(towerForm as any)[k]} onChange={e => setTowerForm(f => ({...f, [k]: +e.target.value}))} />
                     </div>
                   ))}
-                  <button onClick={handleAddTower} style={{...btn('#1565c0'), width:'100%', marginTop:8, padding:'9px'}}>➕ Add Tower</button>
+                  <button onClick={handleAddTower} style={{...btn('#1565c0'), width:'100%', marginTop:8, padding:'9px'}}>
+                    ➕ Add Tower ({towerForm.technology} {towerForm.band})
+                  </button>
                 </div>
 
                 <div style={{ marginTop: 14 }}>
@@ -556,6 +633,22 @@ export default function App() {
                 <div style={card}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: '#00bcd4', marginBottom: 8 }}>📡 RF Propagation</div>
                   <div style={row}>
+                    <span style={label}>Technology</span>
+                    <select style={input} value={towerForm.technology} onChange={e => handleTechnologyChange(e.target.value as Technology)}>
+                      {TECHNOLOGIES.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                  <div style={row}>
+                    <span style={label}>Band</span>
+                    <select style={input} value={towerForm.band} onChange={e => handleBandChange(e.target.value)}>
+                      {availableBands.map(b => <option key={b.band} value={b.band}>{b.label}</option>)}
+                    </select>
+                  </div>
+                  <div style={row}>
+                    <span style={label}>Frequency</span>
+                    <input style={{...input, background: '#0a1628', color: '#607d8b'}} value={`${towerForm.frequency} MHz`} readOnly />
+                  </div>
+                  <div style={row}>
                     <span style={label}>Model</span>
                     <select style={input} value={towerForm.model} onChange={e => setTowerForm(f => ({...f, model: e.target.value as PropagationModel}))}>
                       {MODELS.map(m => <option key={m}>{m}</option>)}
@@ -574,10 +667,10 @@ export default function App() {
                     </div>
                   ))}
                   <button onClick={handleSimulate} disabled={loading} style={{...btn('#1565c0'), width:'100%', padding:'9px', marginTop:8}}>
-                    {loading ? '⏳ Computing...' : '🔥 Generate Coverage'}
+                    {loading ? '⏳ Computing...' : `🔥 Generate Coverage (${towerForm.technology} ${towerForm.band})`}
                   </button>
                   <button onClick={handleQuickEstimate} disabled={loading} style={{...btn('#0891b2'), width:'100%', padding:'9px', marginTop:6}}>
-                    ⚡ Quick Estimate (Band Only)
+                    ⚡ Quick Estimate
                   </button>
                   <button onClick={handleCompareModels} disabled={loading} style={{...btn('#7c3aed'), width:'100%', padding:'9px', marginTop:6}}>
                     📊 Compare All Models
@@ -632,6 +725,12 @@ export default function App() {
                     </div>
                   ))}
                   <div style={row}>
+                    <span style={label}>Technology</span>
+                    <select style={input} value={measForm.tech} onChange={e => setMeasForm(f => ({...f, tech: e.target.value as Technology}))}>
+                      {TECHNOLOGIES.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                  <div style={row}>
                     <span style={label}>RSRP (dBm)</span>
                     <input style={input} type="number" value={measForm.rsrp} onChange={e => setMeasForm(f => ({...f, rsrp: +e.target.value}))} />
                   </div>
@@ -639,12 +738,6 @@ export default function App() {
                     <span style={label}>Operator</span>
                     <select style={input} value={measForm.operator} onChange={e => setMeasForm(f => ({...f, operator: e.target.value}))}>
                       {OPERATORS.map(o => <option key={o}>{o}</option>)}
-                    </select>
-                  </div>
-                  <div style={row}>
-                    <span style={label}>Technology</span>
-                    <select style={input} value={measForm.tech} onChange={e => setMeasForm(f => ({...f, tech: e.target.value}))}>
-                      {TECHNOLOGIES.map(t => <option key={t}>{t}</option>)}
                     </select>
                   </div>
                   <button onClick={handleAddMeasurement} style={{...btn('#22c55e'), width:'100%', padding:'9px', marginTop:6}}>📤 Submit Report</button>

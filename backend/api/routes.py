@@ -416,6 +416,21 @@ def rf_compare_models(req: ModelComparisonRequest):
     models = ["FSPL", "Okumura-Hata", "COST-231"]
     results = []
 
+    # Use realistic max range based on frequency
+    freq = req.frequency_mhz
+    if freq <= 700:
+        max_range = 2.5
+    elif freq <= 900:
+        max_range = 3.0
+    elif freq <= 1800:
+        max_range = 2.0
+    elif freq <= 2100:
+        max_range = 1.8
+    elif freq <= 2500:
+        max_range = 1.2
+    else:
+        max_range = 1.0
+
     for model in models:
         try:
             points = generate_coverage_grid(
@@ -434,9 +449,8 @@ def rf_compare_models(req: ModelComparisonRequest):
                 rsrp_values = [p["predicted_rsrp"] for p in points]
                 avg_pl = sum(p["path_loss_db"] for p in points) / len(points)
 
-                # Estimate coverage area (each grid cell covers ~area)
-                total_range = 20  # km
-                cell_area = (2 * total_range / req.grid_steps) ** 2
+                # Coverage area based on realistic range
+                cell_area = (2 * max_range / req.grid_steps) ** 2
                 coverage_area = len(points) * cell_area
 
                 results.append({
@@ -465,15 +479,16 @@ def rf_quick_estimate(band: str = "B8", environment: str = "urban", lat: float =
     from ..rf.engine import select_propagation_model
 
     # Band → frequency mapping with typical Indian parameters
+    # max_range_km: practical range for Indian macro cell deployment
     band_defaults = {
-        "n28": {"freq": 700, "height": 40, "power": 43, "gain": 17, "label": "700 MHz (5G NR)"},
-        "B5":  {"freq": 850, "height": 35, "power": 43, "gain": 15, "label": "850 MHz"},
-        "B8":  {"freq": 900, "height": 30, "power": 43, "gain": 15, "label": "900 MHz"},
-        "B3":  {"freq": 1800, "height": 30, "power": 43, "gain": 15, "label": "1800 MHz"},
-        "B1":  {"freq": 2100, "height": 25, "power": 40, "gain": 15, "label": "2100 MHz"},
-        "B40": {"freq": 2300, "height": 25, "power": 40, "gain": 12, "label": "2300 MHz"},
-        "B41": {"freq": 2500, "height": 25, "power": 40, "gain": 12, "label": "2500 MHz"},
-        "n78": {"freq": 3500, "height": 25, "power": 40, "gain": 15, "label": "3500 MHz (5G NR)"},
+        "n28": {"freq": 700, "height": 40, "power": 43, "gain": 17, "label": "700 MHz (5G NR)", "max_range_km": 2.5},
+        "B5":  {"freq": 850, "height": 35, "power": 43, "gain": 15, "label": "850 MHz", "max_range_km": 3.0},
+        "B8":  {"freq": 900, "height": 30, "power": 43, "gain": 15, "label": "900 MHz", "max_range_km": 3.0},
+        "B3":  {"freq": 1800, "height": 30, "power": 43, "gain": 15, "label": "1800 MHz", "max_range_km": 2.0},
+        "B1":  {"freq": 2100, "height": 25, "power": 40, "gain": 15, "label": "2100 MHz", "max_range_km": 1.8},
+        "B40": {"freq": 2300, "height": 25, "power": 40, "gain": 12, "label": "2300 MHz", "max_range_km": 1.5},
+        "B41": {"freq": 2500, "height": 25, "power": 40, "gain": 12, "label": "2500 MHz", "max_range_km": 1.2},
+        "n78": {"freq": 3500, "height": 25, "power": 40, "gain": 15, "label": "3500 MHz (5G NR)", "max_range_km": 1.0},
     }
 
     defaults = band_defaults.get(band, band_defaults["B8"])
@@ -503,7 +518,8 @@ def rf_quick_estimate(band: str = "B8", environment: str = "urban", lat: float =
             "power_dbm": defaults["power"],
             "gain_dbi": defaults["gain"],
             "azimuth": 0,
-            "note": "Typical Indian macro cell defaults used. Refine with actual tower specs for accuracy.",
+            "max_range_km": defaults.get("max_range_km", 3.0),
+            "note": "Indian macro cell defaults. Good coverage ~1.5-2km (urban). Max range capped at practical limits.",
         },
         "environment": environment,
         "is_estimate": True,
