@@ -17,7 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Build frontend
 RUN cd frontend && npm install && npm run build
 
-EXPOSE ${PORT:-8000}
+# Railway uses $PORT at runtime; default 8000 for local
+EXPOSE 8000
 
-# Railway sets $PORT at runtime; default to 8000 for local dev
+# Use shell form so $PORT expands at runtime
 CMD python3 -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
