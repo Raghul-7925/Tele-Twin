@@ -550,7 +550,7 @@ def coverage_all(model: str = "Okumura-Hata", environment: str = "urban"):
             gain_dbi=15,
             model=tower_model,
             environment=environment,
-            grid_steps=50,
+            grid_steps=30,
         )
         for p in points:
             p["serving_tower"] = f"{t['operator_name']} #{t['id']}"

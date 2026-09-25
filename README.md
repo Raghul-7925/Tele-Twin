@@ -179,3 +179,18 @@ latitude,longitude,height,operator,tower_type,frequency,technology
 ## License
 
 Academic project — for educational purposes.
+
+
+## Responsiveness notes
+
+The map is optimized for interactive planning rather than rendering every raw sample as a DOM node:
+
+- Leaflet uses Canvas rendering for coverage and measurement layers.
+- Heatmap points are sampled to a bounded visual budget by zoom level.
+- Heatmap tooltips are not created for every point; this avoids thousands of event listeners.
+- Large GeoJSON tower imports are sampled to 800 visible map markers while the full data remains available for analysis/import.
+- Independent startup requests load in parallel.
+- RF simulation previews default to a 32×32 grid; explicit requests are capped at 100×100 to prevent accidental runaway work.
+- Continuous tower marker animations were removed and Leaflet icons are cached.
+
+These changes preserve the RF model and data workflow while making the first screen and map interactions substantially more responsive.

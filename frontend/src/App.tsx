@@ -33,18 +33,23 @@ L.Icon.Default.mergeOptions({
 
 // ── Map center (Puducherry area) ─────────────────────────────────────────────
 const MAP_CENTER: [number, number] = [11.9416, 79.8083];
+const towerIconCache = new Map<string, L.DivIcon>();
+const realTowerIconCache = new Map<string, L.DivIcon>();
 
 // ── Helper: Tower marker icon ────────────────────────────────────────────────
 function towerIcon(operator: string, towerType: string = 'ground', isProposed: boolean = false): L.DivIcon {
   const color = isProposed ? '#f59e0b' : (TOWER_TYPE_COLORS[towerType] || '#22c55e');
   const label = isProposed ? '💡' : '🗼';
+  const cacheKey = `${operator}:${towerType}:${isProposed}`;
+  const cached = towerIconCache.get(cacheKey);
+  if (cached) return cached;
 
-  return L.divIcon({
+  const icon = L.divIcon({
     className: 'tower-marker',
     html: `
       <div style="position:relative;width:50px;height:50px;display:flex;align-items:center;justify-content:center;">
-        <div style="position:absolute;width:50px;height:50px;border-radius:50%;background:radial-gradient(circle,${color}44 0%,${color}00 70%);border:2px ${isProposed ? 'dashed' : 'solid'} ${color}66;animation:towerSpread 2.5s ease-out infinite;"></div>
-        <div style="position:absolute;width:30px;height:30px;border-radius:50%;background:radial-gradient(circle,${color}55 0%,${color}00 70%);border:2px ${isProposed ? 'dashed' : 'solid'} ${color}88;animation:towerPulse 1.8s ease-out infinite;"></div>
+        <div style="position:absolute;width:50px;height:50px;border-radius:50%;background:radial-gradient(circle,${color}44 0%,${color}00 70%);border:2px ${isProposed ? 'dashed' : 'solid'} ${color}66;"></div>
+        <div style="position:absolute;width:30px;height:30px;border-radius:50%;background:radial-gradient(circle,${color}55 0%,${color}00 70%);border:2px ${isProposed ? 'dashed' : 'solid'} ${color}88;"></div>
         <div style="position:absolute;width:18px;height:18px;border-radius:50%;background:${color}cc;border:2px ${isProposed ? 'dashed' : 'solid'} ${color};box-shadow:0 0 10px ${color}88;"></div>
         <div style="position:relative;z-index:2;font-size:16px;filter:drop-shadow(0 0 4px ${color});">${label}</div>
       </div>
@@ -53,12 +58,16 @@ function towerIcon(operator: string, towerType: string = 'ground', isProposed: b
     iconAnchor: [25, 25],
     popupAnchor: [0, -25],
   });
+  towerIconCache.set(cacheKey, icon);
+  return icon;
 }
 
 // ── Real Tower icon (for GeoJSON real towers) ────────────────────────────────
 function realTowerIcon(towerType: string): L.DivIcon {
   const color = TOWER_TYPE_COLORS[towerType] || TOWER_TYPE_COLORS[towerType.toLowerCase()] || '#6b7280';
-  return L.divIcon({
+  const cached = realTowerIconCache.get(towerType);
+  if (cached) return cached;
+  const icon = L.divIcon({
     className: 'tower-marker',
     html: `
       <div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center;">
@@ -70,6 +79,8 @@ function realTowerIcon(towerType: string): L.DivIcon {
     iconAnchor: [18, 18],
     popupAnchor: [0, -18],
   });
+  realTowerIconCache.set(towerType, icon);
+  return icon;
 }
 
 // ── Heatmap Layer (zoom-adaptive) ────────────────────────────────────────────
@@ -101,9 +112,11 @@ function HeatmapLayer({ points, visible }: { points: RFPointResult[]; visible: b
       const baseRadius = Math.max(3, Math.min(20, (zoom - 9) * 2.5));
       const baseOpacity = Math.max(0.2, Math.min(0.65, (zoom - 9) * 0.08));
 
-      // At high zoom, merge nearby points by grouping
-      // Use larger circles to create continuous coverage zones
-      const step = zoom >= 15 ? 1 : zoom >= 13 ? 1 : 2;
+      // A heatmap is a visual summary: rendering every point creates hundreds
+      // of SVG nodes and tooltips. Keep a bounded sample for a responsive map.
+      // MapContainer uses Canvas below, so this remains smooth while zooming.
+      const targetPointCount = zoom >= 15 ? 1200 : zoom >= 13 ? 900 : 600;
+      const step = Math.max(1, Math.ceil(points.length / targetPointCount));
       for (let i =0; i < points.length; i += step) {
         const p = points[i];
         const marker = L.circleMarker([p.latitude, p.longitude], {
@@ -115,10 +128,6 @@ function HeatmapLayer({ points, visible }: { points: RFPointResult[]; visible: b
           weight: zoom >= 14 ? 0.5 : 0,
           opacity: zoom >= 14 ? 0.3 : 0,
         });
-        marker.bindTooltip(
-          `📡 RSRP: ${p.predicted_rsrp} dBm (${p.coverage_class})\n📍 ${p.distance_km} km\n🔧 ${p.propagation_model}`,
-          { sticky: true, className: 'rf-tooltip' }
-        );
         layer.addLayer(marker);
       }
       layer.addTo(map);
@@ -151,7 +160,12 @@ function RealTowersLayer({ data, visible }: { data: any; visible: boolean }) {
     if (!visible || !data || !data.features || !data.features.length) return;
 
     const layer = L.layerGroup();
-    data.features.forEach((f: any) => {
+    // Keep the full GeoJSON for analysis/import, but do not mount thousands of
+    // DOM markers at once. A deterministic sample keeps startup predictable.
+    const features = data.features.length > 800
+      ? data.features.filter((_: any, index: number) => index % Math.ceil(data.features.length / 800) === 0)
+      : data.features;
+    features.forEach((f: any) => {
       const coords = f.geometry?.coordinates;
       if (!coords || coords.length < 2) return;
       const [lon, lat] = coords;
@@ -280,7 +294,10 @@ export default function App() {
     } catch {}
   }, []);
 
-  useEffect(() => { loadTowers(); loadMeasurements(); loadRealTowers(); }, [loadTowers, loadMeasurements, loadRealTowers]);
+  // These requests are independent; do not serialize them during startup.
+  useEffect(() => {
+    void Promise.allSettled([loadTowers(), loadMeasurements(), loadRealTowers()]);
+  }, [loadTowers, loadMeasurements, loadRealTowers]);
 
   // ── Tower actions ──────────────────────────────────────────────────────────
   const handleAddTower = async () => {
@@ -328,7 +345,9 @@ export default function App() {
         mechanical_tilt: towerForm.mTilt,
         propagation_model: towerForm.model,
         environment: towerForm.environment,
-        grid_steps: 50,
+        // 32² is sufficient for a planning preview and removes ~60% of the
+        // backend RF calculations compared with the old 50² default.
+        grid_steps: 32,
         is_proposed: true,
       });
       setCoveragePoints(r.data.points);
@@ -852,7 +871,7 @@ export default function App() {
 
           {/* ── Map Area ──────────────────────────────────────────────────── */}
           <div style={{ flex: 1, position: 'relative' }}>
-            <MapContainer center={MAP_CENTER} zoom={11} style={{ width: '100%', height: '100%' }}>
+            <MapContainer center={MAP_CENTER} zoom={11} preferCanvas={true} style={{ width: '100%', height: '100%' }}>
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='&copy; OpenStreetMap' />
               <MapClickHandler onClick={onMapClick} />
 

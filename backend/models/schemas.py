@@ -168,7 +168,9 @@ class RFSimulateRequest(BaseModel):
     electrical_tilt: float = Field(0.0, ge=0, le=15)
     propagation_model: PropagationModel = PropagationModel.okumura_hata
     environment: Environment = Environment.urban
-    grid_steps: int = Field(50, ge=10, le=200)
+    # 32x32 is the responsive UI default. Higher resolutions remain possible
+    # for explicit analysis, but the API prevents accidental runaway work.
+    grid_steps: int = Field(32, ge=10, le=100)
     is_proposed: bool = True
 
 class PointEstimateRequest(BaseModel):
@@ -219,7 +221,7 @@ class ModelComparisonRequest(BaseModel):
     power_dbm: float = 43.0
     gain_dbi: float = 15.0
     environment: Environment = Environment.urban
-    grid_steps: int = 50
+    grid_steps: int = 32
 
 class ModelComparisonResult(BaseModel):
     model: str
