@@ -32,6 +32,7 @@ export interface TowerCreate {
 export interface Cell {
   id: number;
   tower_id: number;
+  operator_name?: string;
   cell_id?: string;
   pci?: number;
   technology_name: string;
@@ -51,6 +52,7 @@ export interface Cell {
 
 export interface CellCreate {
   tower_id: number;
+  operator_name: string;
   technology_name: string;
   band_name: string;
   frequency_mhz: number;

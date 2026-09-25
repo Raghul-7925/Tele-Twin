@@ -73,7 +73,7 @@ def health():
 # ── Real Tower Data (GeoJSON from data/ folder) ──────────────────────────────
 
 @router.get("/real-towers")
-def get_real_towers(file: Optional[str] = None):
+def get_real_towers(file: Optional[str] = None, limit: int = Query(1200, ge=0, le=10000)):
     """
     Serve real tower GeoJSON data from the data/ directory.
     If no file specified, serves all .json/.geojson files merged.
@@ -108,11 +108,19 @@ def get_real_towers(file: Optional[str] = None):
                 except Exception:
                     continue
 
+    total = len(features)
+    # The initial map should stay responsive in dense regions such as Chennai.
+    # limit=0 is available for export/analysis workflows that need every site.
+    if limit and len(features) > limit:
+        step = max(1, (len(features) + limit - 1) // limit)
+        features = features[::step]
+
     return {
         "type": "FeatureCollection",
         "features": features,
         "source_files": files_found,
-        "total": len(features),
+        "total": total,
+        "visible": len(features),
     }
 
 
@@ -208,16 +216,18 @@ def get_cells(tower_id: Optional[int] = None):
     cur = con.cursor()
     if tower_id:
         cur.execute("""
-            SELECT c.*, t.name as tech_name, b.name as band_name, b.frequency_mhz as band_freq
+            SELECT c.*, o.name as operator_name, t.name as tech_name, b.name as band_name, b.frequency_mhz as band_freq
             FROM cells c
+            LEFT JOIN operators o ON c.operator_id = o.id
             LEFT JOIN technologies t ON c.technology_id = t.id
             LEFT JOIN bands b ON c.band_id = b.id
             WHERE c.tower_id = ?
         """, (tower_id,))
     else:
         cur.execute("""
-            SELECT c.*, t.name as tech_name, b.name as band_name, b.frequency_mhz as band_freq
+            SELECT c.*, o.name as operator_name, t.name as tech_name, b.name as band_name, b.frequency_mhz as band_freq
             FROM cells c
+            LEFT JOIN operators o ON c.operator_id = o.id
             LEFT JOIN technologies t ON c.technology_id = t.id
             LEFT JOIN bands b ON c.band_id = b.id
         """)
@@ -231,6 +241,14 @@ def add_cell(c: CellCreate):
     con = get_connection()
     cur = con.cursor()
 
+    cur.execute("SELECT id FROM operators WHERE name = ?", (c.operator_name,))
+    op_row = cur.fetchone()
+    if op_row:
+        operator_id = op_row[0]
+    else:
+        cur.execute("INSERT INTO operators (name) VALUES (?)", (c.operator_name,))
+        operator_id = cur.lastrowid
+
     cur.execute("SELECT id FROM technologies WHERE name = ?", (c.technology_name,))
     tech_row = cur.fetchone()
     tech_id = tech_row[0] if tech_row else None
@@ -242,10 +260,10 @@ def add_cell(c: CellCreate):
     eirp = c.max_power_dbm + c.gain_dbi
 
     cur.execute("""
-        INSERT INTO cells (tower_id, cell_id, pci, technology_id, band_id, earfcn, nrarfcn,
+        INSERT INTO cells (tower_id, operator_id, cell_id, pci, technology_id, band_id, frequency_mhz, earfcn, nrarfcn,
                           azimuth, mechanical_tilt, electrical_tilt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (c.tower_id, c.cell_id, c.pci, tech_id, band_id, c.earfcn, c.nrarfcn,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (c.tower_id, operator_id, c.cell_id, c.pci, tech_id, band_id, c.frequency_mhz, c.earfcn, c.nrarfcn,
           c.azimuth, c.mechanical_tilt, c.electrical_tilt))
     cell_id = cur.lastrowid
 

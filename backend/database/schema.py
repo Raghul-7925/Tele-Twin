@@ -76,6 +76,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS cells (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tower_id INTEGER NOT NULL REFERENCES towers(id) ON DELETE CASCADE,
+            operator_id INTEGER REFERENCES operators(id),
             cell_id TEXT,
             pci INTEGER,
             technology_id INTEGER REFERENCES technologies(id),
@@ -89,6 +90,11 @@ def init_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # Migrate databases created before operator-specific cells were supported.
+    cell_columns = {row[1] for row in cur.execute("PRAGMA table_info(cells)").fetchall()}
+    if "operator_id" not in cell_columns:
+        cur.execute("ALTER TABLE cells ADD COLUMN operator_id INTEGER REFERENCES operators(id)")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS antennas (

@@ -10,14 +10,14 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import './index.css';
 import {
-  Tower, Measurement, RFPointResult, AIRecommendation,
+  Tower, Cell, Measurement, RFPointResult, AIRecommendation,
   ModelComparisonResult, PropagationModel, Environment, Technology,
   OPERATOR_COLORS, TOWER_TYPE_COLORS, OPERATORS, TECHNOLOGIES,
   MODELS, ENVIRONMENTS, TECHNOLOGY_BANDS, QUICK_ESTIMATE_DEFAULTS,
   getBandsForTechnology, getDefaultBand, BandInfo,
 } from './types';
 import {
-  getTowers, addTower, deleteTower, getMeasurements, addMeasurement,
+  getTowers, addTower, deleteTower, getCells, addCell, getMeasurements, addMeasurement,
   rfSimulate, rfPointEstimate, rfCompareModels, getCoverageAll, rfQuickEstimate,
   importTowers, importMeasurements, getRecommendations,
   getPredictionVsMeasurement, getRealTowers, getRealTowerFiles,
@@ -146,7 +146,7 @@ function HeatmapLayer({ points, visible }: { points: RFPointResult[]; visible: b
   return null;
 }
 
-// ── Real Towers GeoJSON Layer (with tower icons) ─────────────────────────────
+// ── Real Towers GeoJSON Layer ─────────────────────────────────────────────────
 function RealTowersLayer({ data, visible }: { data: any; visible: boolean }) {
   const map = useMap();
   const layerRef = useRef<L.LayerGroup | null>(null);
@@ -162,8 +162,8 @@ function RealTowersLayer({ data, visible }: { data: any; visible: boolean }) {
     const layer = L.layerGroup();
     // Keep the full GeoJSON for analysis/import, but do not mount thousands of
     // DOM markers at once. A deterministic sample keeps startup predictable.
-    const features = data.features.length > 800
-      ? data.features.filter((_: any, index: number) => index % Math.ceil(data.features.length / 800) === 0)
+    const features = data.features.length > 600
+      ? data.features.filter((_: any, index: number) => index % Math.ceil(data.features.length / 600) === 0)
       : data.features;
     features.forEach((f: any) => {
       const coords = f.geometry?.coordinates;
@@ -177,8 +177,13 @@ function RealTowersLayer({ data, visible }: { data: any; visible: boolean }) {
                        normalizedType === 'rooftop' ? 'rooftop' :
                        normalizedType.includes('wall') ? 'wall_mount' : 'ground';
 
-      const marker = L.marker([lat, lon], {
-        icon: realTowerIcon(colorKey),
+      // Canvas marker: no DOM node, no image, and no CSS animation per site.
+      const marker = L.circleMarker([lat, lon], {
+        radius: 4,
+        color: TOWER_TYPE_COLORS[colorKey] || '#64748b',
+        weight: 1,
+        fillColor: TOWER_TYPE_COLORS[colorKey] || '#64748b',
+        fillOpacity: 0.85,
       });
       marker.bindPopup(
         `<div style="font-size:13px;line-height:1.6">` +
@@ -248,6 +253,9 @@ export default function App() {
 
   // RF point inspection
   const [pointInspection, setPointInspection] = useState<any>(null);
+  const [selectedTowerId, setSelectedTowerId] = useState<number | null>(null);
+  const [towerCells, setTowerCells] = useState<Cell[]>([]);
+  const [cellDraft, setCellDraft] = useState({ operator_name: 'Airtel', technology_name: '4G', band_name: 'B3', frequency_mhz: 1800, azimuth: 0, gain_dbi: 15, max_power_dbm: 43 });
 
   const toast = useCallback((m: string) => {
     setMsg(m);
@@ -294,6 +302,10 @@ export default function App() {
     } catch {}
   }, []);
 
+  const loadCells = useCallback(async (towerId: number) => {
+    try { const r = await getCells(towerId); setTowerCells(r.data); } catch { setTowerCells([]); }
+  }, []);
+
   // These requests are independent; do not serialize them during startup.
   useEffect(() => {
     void Promise.allSettled([loadTowers(), loadMeasurements(), loadRealTowers()]);
@@ -324,6 +336,35 @@ export default function App() {
     await deleteTower(id);
     await loadTowers();
     toast('🗑️ Tower removed');
+  };
+
+  const handleAddCell = async () => {
+    if (!selectedTowerId) return toast('Select a tower before adding a radio');
+    try {
+      await addCell({ tower_id: selectedTowerId, ...cellDraft });
+      await loadCells(selectedTowerId);
+      await loadTowers();
+      toast(`📡 Added ${cellDraft.technology_name} ${cellDraft.band_name} radio to tower`);
+    } catch { toast('❌ Could not add radio configuration'); }
+  };
+
+  const handleSimulateCell = async (cell: Cell) => {
+    const tower = towers.find(t => t.id === cell.tower_id);
+    if (!tower) return toast('Tower location is unavailable');
+    setLoading(true);
+    try {
+      const r = await rfSimulate({
+        latitude: tower.latitude, longitude: tower.longitude, height_m: tower.height_m,
+        frequency_mhz: cell.frequency_mhz, power_dbm: cell.max_power_dbm, gain_dbi: cell.gain_dbi,
+        azimuth: cell.azimuth, horizontal_beamwidth: cell.horizontal_beamwidth,
+        vertical_beamwidth: cell.vertical_beamwidth, electrical_tilt: cell.electrical_tilt,
+        mechanical_tilt: cell.mechanical_tilt, propagation_model: towerForm.model,
+        environment: towerForm.environment, grid_steps: 32, is_proposed: false,
+      });
+      setCoveragePoints(r.data.points);
+      toast(`📡 Simulated ${cell.technology_name} ${cell.band_name} · ${r.data.count} points`);
+    } catch { toast('❌ Cell simulation failed'); }
+    setLoading(false);
   };
 
   // ── Coverage simulation ────────────────────────────────────────────────────
@@ -644,6 +685,33 @@ export default function App() {
                     </div>
                   ))}
                   {!towers.length && <div style={{ color: '#546e7a', fontSize: 11, textAlign: 'center', padding: 16 }}>No towers — tap map or import data</div>}
+                </div>
+
+                <div style={{ ...card, marginTop: 12, borderColor: '#0891b255' }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#0891b2', marginBottom: 5 }}>📡 Radio inventory</div>
+                  <div style={{ fontSize: 10, color: '#90a4ae', lineHeight: 1.5, marginBottom: 8 }}>
+                    One physical tower can host many operator + technology + band cells. Add each radio here, then simulate it independently.
+                  </div>
+                  <select style={input} value={selectedTowerId || ''} onChange={e => { const id = Number(e.target.value); setSelectedTowerId(id || null); if (id) void loadCells(id); }}>
+                    <option value="">Select tower…</option>
+                    {towers.map(t => <option key={t.id} value={t.id}>#{t.id} · {t.operator_name} · {t.cell_count} cells</option>)}
+                  </select>
+                  {selectedTowerId && <>
+                    <div style={{ marginTop: 8 }}>
+                      {towerCells.map(cell => <div key={cell.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 8px', marginBottom: 5, background: '#0d2137', borderRadius: 5 }}>
+                        <span style={{ flex: 1, fontSize: 10, color: '#fff' }}>{cell.operator_name || 'Unassigned'} · {cell.technology_name} · {cell.band_name} · {cell.frequency_mhz} MHz</span>
+                        <span style={{ fontSize: 9, color: '#90a4ae' }}>Az {cell.azimuth}°</span>
+                        <button onClick={() => handleSimulateCell(cell)} disabled={loading} style={{ ...btn('#0891b2'), padding: '4px 7px', fontSize: 10 }}>Simulate</button>
+                      </div>)}
+                      {!towerCells.length && <div style={{ fontSize: 10, color: '#607d8b', padding: '5px 0' }}>No radio combinations yet.</div>}
+                    </div>
+                    <div style={{ borderTop: '1px solid #1e3a5f', marginTop: 8, paddingTop: 8 }}>
+                      <div style={{ ...row, marginBottom: 5 }}><span style={label}>Operator</span><select style={input} value={cellDraft.operator_name} onChange={e => setCellDraft(d => ({ ...d, operator_name: e.target.value }))}>{OPERATORS.map(o => <option key={o}>{o}</option>)}</select></div>
+                      <div style={{ ...row, marginBottom: 5 }}><span style={label}>Technology</span><select style={input} value={cellDraft.technology_name} onChange={e => { const tech = e.target.value as Technology; const first = getBandsForTechnology(tech)[0]; setCellDraft(d => ({ ...d, technology_name: tech, band_name: first?.band || d.band_name, frequency_mhz: first?.frequency_mhz || d.frequency_mhz })); }}><option>2G</option><option>3G</option><option>4G</option><option>5G</option></select></div>
+                      <div style={{ ...row, marginBottom: 5 }}><span style={label}>Band</span><select style={input} value={cellDraft.band_name} onChange={e => { const band = getBandsForTechnology(cellDraft.technology_name).find(b => b.band === e.target.value); setCellDraft(d => ({ ...d, band_name: e.target.value, frequency_mhz: band?.frequency_mhz || d.frequency_mhz })); }}>{getBandsForTechnology(cellDraft.technology_name).map(b => <option key={b.band}>{b.band}</option>)}</select></div>
+                      <div style={row}><span style={label}>Azimuth</span><input style={input} type="number" value={cellDraft.azimuth} onChange={e => setCellDraft(d => ({ ...d, azimuth: +e.target.value }))} /><button onClick={handleAddCell} style={{ ...btn('#1565c0'), padding: '7px 9px', whiteSpace: 'nowrap' }}>+ Add radio</button></div>
+                    </div>
+                  </>}
                 </div>
               </>}
 

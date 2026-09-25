@@ -78,6 +78,7 @@ class TowerImportItem(BaseModel):
 
 class CellCreate(BaseModel):
     tower_id: int
+    operator_name: str = "BSNL"
     cell_id: Optional[str] = None
     pci: Optional[int] = Field(None, ge=0, le=1007)
     technology_name: str = "4G"
@@ -96,6 +97,7 @@ class CellCreate(BaseModel):
 class CellResponse(BaseModel):
     id: int
     tower_id: int
+    operator_name: str
     cell_id: Optional[str]
     pci: Optional[int]
     technology_name: str
